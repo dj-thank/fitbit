@@ -22,6 +22,7 @@ import java.util.UUID
 class AirGattProbe(
     private val diagnostics: DiagnosticsLogger,
     private val deviceToken: String,
+    private val expectedSessionId: String = diagnostics.currentSessionId(),
     private val onLog: (String) -> Unit,
 ) : BluetoothGattCallback() {
     companion object {
@@ -30,11 +31,11 @@ class AirGattProbe(
     }
 
     override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-        emit(
+        if (!emit(
             "gatt_connection",
             mapOf("status" to status, "state" to newState),
             "connection status=$status state=$newState id=$deviceToken",
-        )
+        )) return
         if (newState == BluetoothProfile.STATE_CONNECTED) {
             runCatching { gatt.requestMtu(247) }
             gatt.discoverServices()
@@ -46,21 +47,21 @@ class AirGattProbe(
     }
 
     override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-        emit(
+        if (!emit(
             "gatt_services_discovered",
             mapOf("status" to status, "count" to gatt.services.size),
             "services discovered status=$status count=${gatt.services.size}",
-        )
+        )) return
         gatt.services.forEach { logService(it) }
         subscribeFirstNotifiable(gatt)
     }
 
     override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-        emit(
+        if (!emit(
             "gatt_cccd_write",
             mapOf("characteristic_uuid" to descriptor.characteristic.uuid.toString(), "status" to status),
             "CCCD write ${descriptor.characteristic.uuid} status=$status",
-        )
+        )) return
         subscribeFirstNotifiable(gatt, afterUuid = descriptor.characteristic.uuid)
     }
 
@@ -100,6 +101,7 @@ class AirGattProbe(
     }
 
     private fun subscribeFirstNotifiable(gatt: BluetoothGatt, afterUuid: UUID? = null) {
+        if (!diagnostics.isCurrentSession(expectedSessionId)) return
         val chars = gatt.services.flatMap { it.characteristics }.filter { c ->
             (c.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 ||
                 c.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) &&
@@ -152,9 +154,12 @@ class AirGattProbe(
         )
     }
 
-    private fun emit(type: String, fields: Map<String, Any?>, msg: String) {
+    private fun emit(type: String, fields: Map<String, Any?>, msg: String): Boolean {
+        if (!diagnostics.event(type, mapOf("device_token" to deviceToken) + fields, expectedSessionId)) {
+            return false
+        }
         Log.i(TAG, msg)
-        diagnostics.event(type, mapOf("device_token" to deviceToken) + fields)
         onLog(msg)
+        return true
     }
 }

@@ -30,7 +30,7 @@ import java.util.zip.ZipOutputStream
  */
 class DiagnosticsLogger(private val context: Context) {
     private val dir = File(context.filesDir, "diagnostics").apply { mkdirs() }
-    private val salt = UUID.randomUUID().toString()
+    private var salt = ""
     private var sessionId = ""
     private var logFile: File? = null
     private var writer: BufferedWriter? = null
@@ -39,6 +39,7 @@ class DiagnosticsLogger(private val context: Context) {
     fun startNewSession(): File {
         writer?.flush()
         writer?.close()
+        salt = UUID.randomUUID().toString()
         val stamp = utcFileStamp()
         sessionId = "air-$stamp-${UUID.randomUUID().toString().take(8)}"
         val f = File(dir, "$sessionId.jsonl")
@@ -60,7 +61,23 @@ class DiagnosticsLogger(private val context: Context) {
     }
 
     @Synchronized
-    fun event(type: String, fields: Map<String, Any?> = emptyMap()) {
+    fun currentSessionId(): String {
+        if (writer == null) startNewSession()
+        return sessionId
+    }
+
+    @Synchronized
+    fun isCurrentSession(expectedSessionId: String): Boolean =
+        writer != null && sessionId == expectedSessionId
+
+    /** The session check and write share the same lock as startNewSession(). */
+    @Synchronized
+    fun event(
+        type: String,
+        fields: Map<String, Any?> = emptyMap(),
+        expectedSessionId: String? = null,
+    ): Boolean {
+        if (expectedSessionId != null && !isCurrentSession(expectedSessionId)) return false
         if (writer == null) startNewSession()
         val obj = JSONObject()
         obj.put("schema", 1)
@@ -74,9 +91,12 @@ class DiagnosticsLogger(private val context: Context) {
             newLine()
             flush()
         }
+        return true
     }
 
+    @Synchronized
     fun bleAddressToken(address: String): String {
+        if (writer == null) startNewSession()
         val digest = MessageDigest.getInstance("SHA-256")
             .digest("$salt:$address".toByteArray(Charsets.UTF_8))
         return digest.take(8).joinToString("") { "%02x".format(it) }

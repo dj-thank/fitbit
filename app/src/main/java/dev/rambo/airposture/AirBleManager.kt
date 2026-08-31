@@ -25,18 +25,20 @@ class AirBleManager(
 
     fun scanAndConnect(timeoutMs: Long = 12_000) {
         stopScan()
+        val expectedSessionId = diagnostics.currentSessionId()
         if (!adapter.isEnabled) {
-            record("scan_error", mapOf("reason" to "bluetooth_disabled"), "Bluetooth is disabled")
+            record("scan_error", mapOf("reason" to "bluetooth_disabled"), "Bluetooth is disabled", expectedSessionId)
             return
         }
-        record("scan_start", mapOf("timeout_ms" to timeoutMs), "BLE scan started")
+        if (!record("scan_start", mapOf("timeout_ms" to timeoutMs), "BLE scan started", expectedSessionId)) return
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
+                if (!diagnostics.isCurrentSession(expectedSessionId)) return
                 val advertised = result.scanRecord?.deviceName.orEmpty()
                 val connectedName = runCatching { result.device.name.orEmpty() }.getOrDefault("")
                 val name = if (advertised.isNotBlank()) advertised else connectedName
                 val token = diagnostics.bleAddressToken(result.device.address)
-                diagnostics.event(
+                if (!diagnostics.event(
                     "scan_result",
                     mapOf(
                         "device_token" to token,
@@ -46,29 +48,31 @@ class AirBleManager(
                         "service_uuids" to (result.scanRecord?.serviceUuids?.map { it.uuid.toString() } ?: emptyList<String>()),
                         "advertisement_hex" to (result.scanRecord?.bytes?.toHex() ?: ""),
                     ),
-                )
+                    expectedSessionId,
+                )) return
                 onLog("seen name='$name' id=$token rssi=${result.rssi}")
 
                 if (name.contains("fitbit", ignoreCase = true) || name.contains("air", ignoreCase = true)) {
-                    record(
+                    if (!record(
                         "candidate_selected",
                         mapOf("device_token" to token, "name" to name, "rssi" to result.rssi),
                         "candidate selected: $name id=$token",
-                    )
+                        expectedSessionId,
+                    )) return
                     stopScan()
-                    connect(result.device, token)
+                    connect(result.device, token, expectedSessionId)
                 }
             }
 
             override fun onScanFailed(errorCode: Int) {
-                record("scan_error", mapOf("error_code" to errorCode), "BLE scan failed code=$errorCode")
+                record("scan_error", mapOf("error_code" to errorCode), "BLE scan failed code=$errorCode", expectedSessionId)
             }
         }
         callback = cb
         scanner.startScan(cb)
         handler.postDelayed({
             if (callback === cb) {
-                record("scan_timeout", mapOf("timeout_ms" to timeoutMs), "BLE scan timeout")
+                record("scan_timeout", mapOf("timeout_ms" to timeoutMs), "BLE scan timeout", expectedSessionId)
                 stopScan()
             }
         }, timeoutMs)
@@ -86,20 +90,21 @@ class AirBleManager(
         gatt = null
     }
 
-    private fun connect(device: BluetoothDevice, token: String) {
-        record("connect_start", mapOf("device_token" to token), "connecting id=$token")
+    private fun connect(device: BluetoothDevice, token: String, expectedSessionId: String) {
+        if (!record("connect_start", mapOf("device_token" to token), "connecting id=$token", expectedSessionId)) return
         gatt?.close()
         gatt = device.connectGatt(
             appContext,
             false,
-            AirGattProbe(diagnostics, token, onLog),
+            AirGattProbe(diagnostics, token, expectedSessionId, onLog),
             BluetoothDevice.TRANSPORT_LE,
         )
     }
 
-    private fun record(type: String, fields: Map<String, Any?>, message: String) {
-        diagnostics.event(type, fields)
+    private fun record(type: String, fields: Map<String, Any?>, message: String, expectedSessionId: String): Boolean {
+        if (!diagnostics.event(type, fields, expectedSessionId)) return false
         onLog(message)
+        return true
     }
 }
 
