@@ -52,7 +52,7 @@ class DiagnosticsSessionTest {
         val logger = newLogger()
         val firstFile = logger.startNewSession()
         val oldToken = logger.bleAddressToken(ADDRESS_A)
-        val oldProbe = AirGattProbe(logger, oldToken) {}
+        val oldProbe = AirGattProbe(logger, oldToken, logger.currentSessionId()) {}
         notify(oldProbe, 0x11)
         assertEquals(listOf("11"), notifications(firstFile).map { it.getString("value_hex") })
 
@@ -61,7 +61,7 @@ class DiagnosticsSessionTest {
         notify(oldProbe, 0x22)
         logger.event("marker_neutral")
         val freshToken = logger.bleAddressToken(ADDRESS_A)
-        val freshProbe = AirGattProbe(logger, freshToken) {}
+        val freshProbe = AirGattProbe(logger, freshToken, logger.currentSessionId()) {}
         notify(freshProbe, 0x33)
 
         val secondNotifications = notifications(secondFile)
@@ -82,7 +82,7 @@ class DiagnosticsSessionTest {
 
         val deferredProbe = AirGattProbe(logger, scanToken, scanSession) {}
         notify(deferredProbe, 0x55)
-        val freshProbe = AirGattProbe(logger, logger.bleAddressToken(ADDRESS_A)) {}
+        val freshProbe = AirGattProbe(logger, logger.bleAddressToken(ADDRESS_A), logger.currentSessionId()) {}
         notify(freshProbe, 0x66)
 
         assertEquals(listOf("66"), notifications(secondFile).map { it.getString("value_hex") })
@@ -95,7 +95,7 @@ class DiagnosticsSessionTest {
         val logger = newLogger()
         logger.startNewSession()
         val messages = mutableListOf<String>()
-        val oldProbe = AirGattProbe(logger, logger.bleAddressToken(ADDRESS_A), onLog = messages::add)
+        val oldProbe = AirGattProbe(logger, logger.bleAddressToken(ADDRESS_A), logger.currentSessionId(), messages::add)
         val gatt = ShadowBluetoothGatt.newInstance(ShadowBluetoothDevice.newInstance(ADDRESS_A))
         val characteristic = BluetoothGattCharacteristic(
             UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb"),

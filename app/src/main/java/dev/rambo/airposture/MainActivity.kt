@@ -54,8 +54,7 @@ class MainActivity : Activity() {
         content.addView(button("● マーカー: 歩行・日常動作") { marker("walk") })
         content.addView(button("● マーカー: Fitbit側アラームを今作動") { marker("fitbit_alarm") })
         content.addView(button("新しいログセッションを開始（BLE停止）") {
-            ble.stop()
-            val newFile = diagnostics.startNewSession()
+            val newFile = ble.startNewSession()
             appendLog("new session: ${newFile.name}; BLE stopped")
         })
         content.addView(button("ログZIPを共有 / ChatGPTへ送る") {

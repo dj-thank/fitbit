@@ -22,9 +22,21 @@ import java.util.UUID
 class AirGattProbe(
     private val diagnostics: DiagnosticsLogger,
     private val deviceToken: String,
-    private val expectedSessionId: String = diagnostics.currentSessionId(),
+    private val expectedSessionId: String,
     private val onLog: (String) -> Unit,
 ) : BluetoothGattCallback() {
+    private var active = true
+
+    internal fun stop(): Unit = synchronized(diagnostics) { active = false }
+
+    internal fun isActive(): Boolean = synchronized(diagnostics) {
+        active && diagnostics.isCurrentSession(expectedSessionId)
+    }
+
+    private inline fun <T> whileActive(operation: () -> T): T? = synchronized(diagnostics) {
+        if (isActive()) operation() else null
+    }
+
     companion object {
         private const val TAG = "AirGattProbe"
         private val CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -37,8 +49,8 @@ class AirGattProbe(
             "connection status=$status state=$newState id=$deviceToken",
         )) return
         if (newState == BluetoothProfile.STATE_CONNECTED) {
-            runCatching { gatt.requestMtu(247) }
-            gatt.discoverServices()
+            whileActive { runCatching { gatt.requestMtu(247) } }
+            whileActive { gatt.discoverServices() }
         }
     }
 
@@ -100,8 +112,7 @@ class AirGattProbe(
         }
     }
 
-    private fun subscribeFirstNotifiable(gatt: BluetoothGatt, afterUuid: UUID? = null) {
-        if (!diagnostics.isCurrentSession(expectedSessionId)) return
+    private fun subscribeFirstNotifiable(gatt: BluetoothGatt, afterUuid: UUID? = null): Unit = whileActive {
         val chars = gatt.services.flatMap { it.characteristics }.filter { c ->
             (c.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 ||
                 c.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) &&
@@ -110,16 +121,19 @@ class AirGattProbe(
         val start = if (afterUuid == null) 0 else chars.indexOfFirst { it.uuid == afterUuid } + 1
         if (start !in chars.indices) {
             emit("gatt_subscriptions_complete", mapOf("count" to chars.size), "notification subscriptions complete")
-            return
+            return@whileActive
         }
         val c = chars[start]
-        val descriptor = c.getDescriptor(CCCD) ?: return
+        val descriptor = c.getDescriptor(CCCD) ?: return@whileActive
+        if (!isActive()) return@whileActive
         val localAccepted = gatt.setCharacteristicNotification(c, true)
         val enableValue = if (c.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) {
             BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
         } else {
             BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
         }
+        // Platform calls and onLog can synchronously reenter stop/session rotation.
+        if (!isActive()) return@whileActive
         val accepted = if (Build.VERSION.SDK_INT >= 33) {
             gatt.writeDescriptor(descriptor, enableValue) == android.bluetooth.BluetoothStatusCodes.SUCCESS
         } else {
@@ -139,7 +153,7 @@ class AirGattProbe(
             "subscribe ${c.uuid} local=$localAccepted accepted=$accepted",
         )
         if (!accepted) subscribeFirstNotifiable(gatt, c.uuid)
-    }
+    } ?: Unit
 
     private fun emitNotification(uuid: UUID, value: ByteArray) {
         val hex = value.toHex()
@@ -154,12 +168,12 @@ class AirGattProbe(
         )
     }
 
-    private fun emit(type: String, fields: Map<String, Any?>, msg: String): Boolean {
+    private fun emit(type: String, fields: Map<String, Any?>, msg: String): Boolean = whileActive {
         if (!diagnostics.event(type, mapOf("device_token" to deviceToken) + fields, expectedSessionId)) {
-            return false
+            return@whileActive false
         }
         Log.i(TAG, msg)
         onLog(msg)
-        return true
-    }
+        isActive()
+    } ?: false
 }
